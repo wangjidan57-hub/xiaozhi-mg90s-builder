@@ -1,0 +1,85 @@
+name: Build XiaoZhi MG90S firmware
+
+on:
+  push:
+    branches:
+      - feature/mg90s-gpio2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build bread-compact-wifi with MG90S
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.1
+    steps:
+      - name: Check out this builder repository
+        uses: actions/checkout@v4
+
+      - name: Fetch the matching XiaoZhi ESP32 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/78/xiaozhi-esp32.git upstream
+          git -C upstream checkout --detach d7a1c05308fb6e116ffb44b9e2c6e67b3366302a
+          echo "Upstream commit:"
+          git -C upstream rev-parse HEAD
+
+      - name: Apply the MG90S GPIO2 modification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp patches/main/boards/bread-compact-wifi/config.h upstream/main/boards/bread-compact-wifi/config.h
+          cp patches/main/boards/bread-compact-wifi/compact_wifi_board.cc upstream/main/boards/bread-compact-wifi/compact_wifi_board.cc
+          cp patches/main/boards/bread-compact-wifi/servo_controller.h upstream/main/boards/bread-compact-wifi/servo_controller.h
+
+      - name: Build and merge the full flash image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream
+          source "$IDF_PATH/export.sh"
+          idf.py --version
+          python scripts/build.py bread-compact-wifi --name bread-compact-wifi --language zh-CN
+          test -s build/merged-binary.bin
+
+      - name: Prepare Flash Download Tool package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          cp upstream/build/merged-binary.bin output/xiaozhi-mg90s-bread-compact-wifi.bin
+          cat > output/FLASH使用说明.txt <<'EOF'
+          小智 MG90S 舵机版 - Flash Download Tool 使用说明
+
+          固件文件：xiaozhi-mg90s-bread-compact-wifi.bin
+          烧录地址：0x00000000
+
+          这是 ESP-IDF merge-bin 生成的完整合并镜像，包含启动所需的镜像段。
+          请在 Flash Download Tool 中将此文件对应地址设为 0x00000000。
+
+          烧录前：
+          1. 保留原来的 xiaozhiAI.bin 作为回退备份。
+          2. 确认目标芯片为 ESP32-S3，串口选择正确。
+          3. 不要同时加载本文件和旧固件的其他分段文件。
+          4. 不要随意勾选 Erase All；如需保留原 Wi-Fi 配置，避免全片擦除。
+          5. MG90S 红线接稳定 5V，棕线接 GND，橙/黄信号线接 GPIO2；外部 5V 电源的 GND 必须与 ESP32 GND 共地。
+
+          首次测试建议先让舵机空载，语音指令从“转到90度”开始，再小幅改变角度。
+          如果舵机持续抖动、发热、卡住或 ESP32 重启，立即断开舵机电源并检查供电和接线。
+
+          本固件将逻辑角度 0..180 映射到 600..2400 微秒的 PWM 脉宽，以降低撞击机械限位的风险；不同批次舵机的实际角度可能略有差异。
+          EOF
+          sha256sum output/xiaozhi-mg90s-bread-compact-wifi.bin > output/SHA256SUMS.txt
+          ls -lh output
+
+      - name: Upload firmware and flashing instructions
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaozhi-mg90s-esp32s3-flash-package
+          path: output/*
+          if-no-files-found: error
+          retention-days: 30
